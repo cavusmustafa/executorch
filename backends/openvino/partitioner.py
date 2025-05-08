@@ -161,7 +161,7 @@ class OpenvinoPartitioner(Partitioner):
             allows_single_node_partition=True,
         )
         partition_list = partitioner.propose_partitions()
-        print("\tDEBUG - part - size: ", partition.size())
+        print("DEBUG - num_parts: ", len(partition_list))
 
         partition_tags = {}
         for partition in partition_list:
