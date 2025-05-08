@@ -62,6 +62,13 @@ class OpenvinoOperatorsSupport(OperatorSupportBase):
             op_type = node.target.__name__
         else:
             op_type = str(node.target)
+
+        if op_type in self._op_types_to_skip or node.name in self._op_names_to_skip:
+            print(
+                f"[OpenVINO Backend] The {op_type} operator with name '{node.name}' is skipped."
+            )
+            return False
+
         supported_ops = OperatorSupport(options)._support_dict
         if op_type == "getitem":
             return True
@@ -71,11 +78,6 @@ class OpenvinoOperatorsSupport(OperatorSupportBase):
         else:
             print("Op not supported: ", "torch.ops." + str(op_type))
 
-        if op_type in self._op_types_to_skip or node.name in self._op_names_to_skip:
-            print(
-                f"[OpenVINO Backend] The {op_type} operator with name '{node.name}' is skipped."
-            )
-            return False
 
         return False
 
@@ -127,15 +129,43 @@ class OpenvinoPartitioner(Partitioner):
         :param exported_program: The exported program.
         :return: A PartitionResult containing the partitioned graph and delegation tags.
         """
+
+        self._op_names_to_skip = set()
+        print("DEBUG - OpenvinoPartitioner - graph")
+        #print(exported_program.graph_module.code)
+        for node in exported_program.graph_module.graph.nodes:
+            if str(node.op).strip() == "call_function" and str(node.target.__name__).strip() == "aten.slice_copy.Tensor":
+            #if str(node.op).strip() == "call_function" and str(node.target.__name__).strip() == "aten.slice_copy.Tensor" and str(node.name).strip() == "aten_slice_copy_tensor_6":
+                print("\tDEBUG - OpenvinoPartitioner - slice_copy - op: ", node.op, ", target: ", node.target.__name__, ", name: ", node.name)
+                if not (len(node.all_input_nodes) == 3):
+                    continue
+                slice_copy_in0 = node.all_input_nodes[0]
+                if not (str(slice_copy_in0.op).strip() == "placeholder"):
+                    continue
+                print("\t\tDEBUG - OpenvinoPartitioner - slice_copy_in0 - op: ", slice_copy_in0.op, ", target: ", slice_copy_in0.target, ", name: ", slice_copy_in0.name)
+                slice_copy_in1 = node.all_input_nodes[1]
+                if not (str(slice_copy_in1.op).strip() == "call_function" and str(slice_copy_in1.target.__name__).strip() == "_local_scalar_dense.default"):
+                    continue
+                print("\t\tDEBUG - OpenvinoPartitioner - slice_copy_in1 - op: ", slice_copy_in1.op, ", target: ", slice_copy_in1.target.__name__, ", name: ", slice_copy_in1.name)
+                slice_copy_in2 = node.all_input_nodes[2]
+                if not (str(slice_copy_in2.op).strip() == "call_function" and str(slice_copy_in2.target.__name__).strip() == "add"):
+                    continue
+                print("\t\tDEBUG - OpenvinoPartitioner - slice_copy_in2 - op: ", slice_copy_in2.op, ", target: ", slice_copy_in2.target.__name__, ", name: ", slice_copy_in2.name)
+                #for input_node in node.all_input_nodes:
+                #    print("\tDEBUG - OpenvinoPartitioner - input_node - op: ", input_node.op, ", target: ", input_node.target, ", name: ", input_node.name)
+                self._op_names_to_skip.add(node.name)
+
         partitioner = CapabilityBasedPartitioner(
             exported_program.graph_module,
             OpenvinoOperatorsSupport(self._op_types_to_skip, self._op_names_to_skip),
             allows_single_node_partition=True,
         )
         partition_list = partitioner.propose_partitions()
+        print("\tDEBUG - part - size: ", partition.size())
 
         partition_tags = {}
         for partition in partition_list:
+            print("\tDEBUG - part - size: ", partition.size())
             for node in partition.nodes:
                 tag = f"tag{partition.id}"
                 node.meta["delegation_tag"] = tag

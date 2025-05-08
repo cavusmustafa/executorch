@@ -38,6 +38,7 @@ from executorch.extension.llm.export.builder import DType, LLMEdgeManager
 from executorch.extension.llm.export.partitioner_lib import (
     get_coreml_partitioner,
     get_mps_partitioner,
+    get_openvino_partitioner,
     get_qnn_partitioner,
     get_vulkan_partitioner,
     get_xnnpack_partitioner,
@@ -414,6 +415,7 @@ def build_args_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Delegate llama2 to qnn backend (Qualcomm), please use it --kv_cahce=True",
     )
+    parser.add_argument("--openvino", action="store_true")
 
     parser.add_argument(
         "--expand_rope_table",
@@ -813,6 +815,10 @@ def _to_edge_and_lower_llama(  # noqa: C901
     if args.mps:
         partitioners.append(get_mps_partitioner(args.use_kv_cache))
         modelname = f"mps_{modelname}"
+
+    if args.openvino:
+        partitioners.append(get_openvino_partitioner(args.use_kv_cache))
+        modelname = f"openvino_{modelname}"
 
     if args.coreml:
         coreml_partitioner = get_coreml_partitioner(
