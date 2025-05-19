@@ -412,32 +412,26 @@ class LLMEdgeManager:
                 DuplicateDynamicQuantChainPass()(m)
                 self.pre_autograd_graph_module = m
             return self
-        elif(self.nncf_compression):
+        elif (self.nncf_compression):
             tokenizer = get_tokenizer(self.tokenizer_path)
-            def transform_fn(
-                module: torch.fx.GraphModule, tokenizer, prompts: str
-            ):
-                # TODO: change criteria & support batch inputs if necessary
-                pos = torch.tensor(0, dtype=torch.int64)
-                token_list = tokenizer.encode(prompts, bos=True, eos=False)
 
-                with torch.no_grad():
-                    while token_list[-1] != tokenizer.eos_id:
-                        logits = module(
-                            torch.full((1, 1), token_list[pos]),
-                            {"input_pos": torch.tensor((pos,))},
-                        )
-                        pos += 1
-                        if pos >= len(token_list):
-                            if self.generate_full_logits:
-                                token_list.append(
-                                    torch.argmax(logits[:, -1], dim=-1).item()
-                                )
-                            else:
-                                token_list.append(torch.argmax(logits[:], dim=-1).item())
+            def transform_fn(
+                prompts: str, tokenizer
+            ):
+                tokenized_text = tokenizer.encode(prompts, bos=False, eos=False)
+                logging.error(tokenized_text)
+
+                inputs = ()
+                inputs = (
+                    torch.tensor(tokenized_text).unsqueeze(0),
+                    {"input_pos": torch.tensor([0])},
+                )
+
+                return inputs
+                                
             self.pre_autograd_graph_module = nncf.compress_weights(
                                                                 self.pre_autograd_graph_module,
-                                                                dataset=nncf.Dataset(self.calibration_data, transform_func=partial(transform_fn, self.pre_autograd_graph_module, tokenizer)),
+                                                                dataset=nncf.Dataset([self.calibration_data], transform_func=partial(transform_fn, tokenizer=tokenizer)),
                                                                 mode=nncf.CompressWeightsMode.INT4_SYM,
                                                                 ratio=0.8,
                                                                 sensitivity_metric=nncf.SensitivityMetric.HESSIAN_INPUT_ACTIVATION,
