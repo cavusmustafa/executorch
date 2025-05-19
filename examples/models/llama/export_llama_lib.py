@@ -521,6 +521,13 @@ def build_args_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="If true, stops right after torch.export() and saves the exported model.",
     )
+
+    parser.add_argument(
+        "--nncf_compression",
+        default=False,
+        action="store_true",
+        help="If true, stops right after torch.export() and saves the exported model.",
+    )
     return parser
 
 
@@ -1138,6 +1145,7 @@ def _load_llama_model(
         use_legacy_export=args.qnn,
         save_exported_program=args.export_only,
         verbose=verbose,
+        nncf_compression=args.nncf_compression,
         metadata=_load_llama_model_metadata(
             weight_type,
             use_kv_cache,
