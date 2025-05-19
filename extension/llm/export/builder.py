@@ -428,10 +428,11 @@ class LLMEdgeManager:
                 )
 
                 return inputs
-                                
+
+            self.calibration_data = [self.calibration_data] if isinstance(self.calibration_data, str) else self.calibration_data
             self.pre_autograd_graph_module = nncf.compress_weights(
                                                                 self.pre_autograd_graph_module,
-                                                                dataset=nncf.Dataset([self.calibration_data], transform_func=partial(transform_fn, tokenizer=tokenizer)),
+                                                                dataset=nncf.Dataset(self.calibration_data, transform_func=partial(transform_fn, tokenizer=tokenizer)),
                                                                 mode=nncf.CompressWeightsMode.INT4_SYM,
                                                                 ratio=0.8,
                                                                 sensitivity_metric=nncf.SensitivityMetric.HESSIAN_INPUT_ACTIVATION,
