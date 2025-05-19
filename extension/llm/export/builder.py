@@ -412,7 +412,7 @@ class LLMEdgeManager:
                 DuplicateDynamicQuantChainPass()(m)
                 self.pre_autograd_graph_module = m
             return self
-        if(self.nncf_compression):
+        elif(self.nncf_compression):
             tokenizer = get_tokenizer(self.tokenizer_path)
             def transform_fn(
                 module: torch.fx.GraphModule, tokenizer, prompts: str
@@ -437,10 +437,10 @@ class LLMEdgeManager:
                                 token_list.append(torch.argmax(logits[:], dim=-1).item())
             self.pre_autograd_graph_module = nncf.compress_weights(
                                                                 self.pre_autograd_graph_module,
-                                                                # dataset=nncf.Dataset(self.calibration_data, transform_func=partial(transform_fn, self.pre_autograd_graph_module, tokenizer)),
+                                                                dataset=nncf.Dataset(self.calibration_data, transform_func=partial(transform_fn, self.pre_autograd_graph_module, tokenizer)),
                                                                 mode=nncf.CompressWeightsMode.INT4_SYM,
-                                                                # ratio=0.8,
-                                                                # sensitivity_metric=nncf.SensitivityMetric.HESSIAN_INPUT_ACTIVATION,
+                                                                ratio=0.8,
+                                                                sensitivity_metric=nncf.SensitivityMetric.HESSIAN_INPUT_ACTIVATION,
                                                             )
             return self
         else:
