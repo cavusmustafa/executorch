@@ -442,6 +442,7 @@ class LLMEdgeManager:
                                                                 # ratio=0.8,
                                                                 # sensitivity_metric=nncf.SensitivityMetric.HESSIAN_INPUT_ACTIVATION,
                                                             )
+            return self
         else:
             logging.info("No quantizer provided, passing...")
             return self
