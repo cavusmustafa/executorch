@@ -15,7 +15,7 @@ import logging
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from unittest.mock import patch
-
+import nncf
 import torch
 from executorch.backends.transforms.duplicate_dynamic_quant_chain import (
     DuplicateDynamicQuantChainPass,
@@ -41,6 +41,7 @@ from torch.ao.quantization.quantizer.composable_quantizer import ComposableQuant
 from torch.export import export_for_training, ExportedProgram
 from torch.nn.attention import SDPBackend
 from torchao.utils import unwrap_tensor_subclass
+from functools import partial
 
 FORMAT = "[%(levelname)s %(asctime)s %(filename)s:%(lineno)s] %(message)s"
 logging.basicConfig(level=logging.INFO, format=FORMAT)
@@ -99,6 +100,7 @@ class LLMEdgeManager:
         dynamic_shapes: Optional[Any] = None,
         use_legacy_export: bool = False,
         save_exported_program: bool = False,
+        nncf_compression: bool = False
     ):
         # Store necessary constructor arguments.
         self.model = model
@@ -120,6 +122,7 @@ class LLMEdgeManager:
         self.dynamic_shapes = dynamic_shapes
         self.use_legacy_export = use_legacy_export
         self.save_exported_program = save_exported_program
+        self.nncf_compression = nncf_compression
 
         # Note: treat this as the source of truth for the result of
         # torch.export'ing a model. If the overall ExportedProgram is needed,
@@ -408,6 +411,34 @@ class LLMEdgeManager:
                 m = convert_pt2e(m)
                 DuplicateDynamicQuantChainPass()(m)
                 self.pre_autograd_graph_module = m
+            return self
+        elif (self.nncf_compression):
+            tokenizer = get_tokenizer(self.tokenizer_path)
+
+            def transform_fn(
+                prompts: str, tokenizer
+            ):
+                tokenized_text = tokenizer.encode(prompts, bos=False, eos=False)
+                logging.error(tokenized_text)
+
+                inputs = ()
+                inputs = (
+                    torch.tensor(tokenized_text).unsqueeze(0),
+                    {"input_pos": torch.tensor([0])},
+                )
+
+                return inputs
+
+            self.calibration_data = [self.calibration_data] if isinstance(self.calibration_data, str) else self.calibration_data
+            self.calibration_data = [word for prompt in self.calibration_data for word in prompt.split()] if not self.dynamic_shapes else self.calibration_data
+            logging.error(self.calibration_data)
+            self.pre_autograd_graph_module = nncf.compress_weights(
+                                                                self.pre_autograd_graph_module,
+                                                                dataset=nncf.Dataset(self.calibration_data, transform_func=partial(transform_fn, tokenizer=tokenizer)),
+                                                                mode=nncf.CompressWeightsMode.INT4_SYM,
+                                                                ratio=0.8,
+                                                                sensitivity_metric=nncf.SensitivityMetric.HESSIAN_INPUT_ACTIVATION,
+                                                            )
             return self
         else:
             logging.info("No quantizer provided, passing...")
