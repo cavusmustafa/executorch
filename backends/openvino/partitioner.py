@@ -26,6 +26,12 @@ from torch.fx.passes.infra.partitioner import CapabilityBasedPartitioner
 from torch.fx.passes.operator_support import OperatorSupportBase
 
 
+class PatternNode:
+    op_types = {}
+
+    def __init__(self):
+        self.op_types = {}
+
 class OpenvinoOperatorsSupport(OperatorSupportBase):
 
     def __init__(
@@ -121,6 +127,47 @@ class OpenvinoPartitioner(Partitioner):
             torch.ops.aten.upsample_nearest2d.vec,
         ]
         return (ops_not_decompose, None)
+    
+    def check_pattern(self, node: torch.fx.Node, pattern: PatternNode, enabled_ops: list) -> bool:
+        if node.op == "call_function":
+            if ("call_function" + ":" + str(node.target)) in pattern.op_types:
+                pt_input_nodes = node.all_input_nodes
+                pattern_input_ops = pattern.op_types["call_function" + ":" + str(node.target)]
+                if pattern_input_ops is None:
+                    enabled_ops.append(node)
+                    return True
+                if len(pt_input_nodes) != len(pattern_input_ops):
+                    return False
+                for i in range(len(pt_input_nodes)):
+                    if not self.check_pattern(pt_input_nodes[i], pattern_input_ops[i], enabled_ops):
+                        return False
+                enabled_ops.append(node)
+                return True
+        elif node.op == "get_attr":
+            if "get_attr" in pattern.op_types:
+                return True
+            else:
+                return False
+        return False
+
+    def capture_nncf_patterns(self, graph_module: torch.fx.GraphModule):
+        const_node = PatternNode
+        const_node.op_types["get_attr"] = None
+        bitwise_right_shift_node = PatternNode
+        bitwise_right_shift_node.op_types["call_function:aten.bitwise_right_shift.Tensor_Scalar"] = [const_node]
+        bitwise_and_node = PatternNode
+        bitwise_and_node.op_types["call_function:aten.bitwise_and.Scalar"] = [const_node]
+        stack_node = PatternNode
+        stack_node.op_types["call_function:aten.stack.default"] = [bitwise_and_node, bitwise_right_shift_node]
+
+        for node in graph_module.graph.nodes:
+            if str(node.op) == "call_function" and str(node.target) == "aten.stack.default":
+                enabled_ops = []
+                pattern_match = self.check_pattern(node, bitwise_and_node, enabled_ops)
+                if pattern_match:
+                    for pattern_op in enabled_ops:
+                        print(pattern_op.name)
+                        self._op_names_to_skip.add(pattern_op.name)
 
     def partition(self, exported_program: ExportedProgram) -> PartitionResult:
         """
@@ -154,7 +201,8 @@ class OpenvinoPartitioner(Partitioner):
                 #for input_node in node.all_input_nodes:
                 #    print("\tDEBUG - OpenvinoPartitioner - input_node - op: ", input_node.op, ", target: ", input_node.target, ", name: ", input_node.name)
                 self._op_names_to_skip.add(node.name)
-
+                
+        self.capture_nncf_patterns(exported_program.graph_module)
         partitioner = CapabilityBasedPartitioner(
             exported_program.graph_module,
             OpenvinoOperatorsSupport(self._op_types_to_skip, self._op_names_to_skip),
