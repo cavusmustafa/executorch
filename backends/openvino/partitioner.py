@@ -26,6 +26,12 @@ from torch.fx.passes.infra.partitioner import CapabilityBasedPartitioner
 from torch.fx.passes.operator_support import OperatorSupportBase
 
 
+class PatternNode:
+    op_types = {}
+
+    def __init__(self):
+        self.op_types = {}
+
 class OpenvinoOperatorsSupport(OperatorSupportBase):
 
     def __init__(
@@ -62,6 +68,13 @@ class OpenvinoOperatorsSupport(OperatorSupportBase):
             op_type = node.target.__name__
         else:
             op_type = str(node.target)
+
+        if op_type in self._op_types_to_skip or node.name in self._op_names_to_skip:
+            print(
+                f"[OpenVINO Backend] The {op_type} operator with name '{node.name}' is skipped."
+            )
+            return False
+
         supported_ops = OperatorSupport(options)._support_dict
         if op_type == "getitem":
             return True
@@ -71,11 +84,6 @@ class OpenvinoOperatorsSupport(OperatorSupportBase):
         else:
             print("Op not supported: ", "torch.ops." + str(op_type))
 
-        if op_type in self._op_types_to_skip or node.name in self._op_names_to_skip:
-            print(
-                f"[OpenVINO Backend] The {op_type} operator with name '{node.name}' is skipped."
-            )
-            return False
 
         return False
 
@@ -119,6 +127,47 @@ class OpenvinoPartitioner(Partitioner):
             torch.ops.aten.upsample_nearest2d.vec,
         ]
         return (ops_not_decompose, None)
+    
+    def check_pattern(self, node: torch.fx.Node, pattern: PatternNode, enabled_ops: list) -> bool:
+        if node.op == "call_function":
+            if ("call_function" + ":" + str(node.target)) in pattern.op_types:
+                pt_input_nodes = node.all_input_nodes
+                pattern_input_ops = pattern.op_types["call_function" + ":" + str(node.target)]
+                if pattern_input_ops is None:
+                    enabled_ops.append(node)
+                    return True
+                if len(pt_input_nodes) != len(pattern_input_ops):
+                    return False
+                for i in range(len(pt_input_nodes)):
+                    if not self.check_pattern(pt_input_nodes[i], pattern_input_ops[i], enabled_ops):
+                        return False
+                enabled_ops.append(node)
+                return True
+        elif node.op == "get_attr":
+            if "get_attr" in pattern.op_types:
+                return True
+            else:
+                return False
+        return False
+
+    def capture_nncf_patterns(self, graph_module: torch.fx.GraphModule):
+        const_node = PatternNode
+        const_node.op_types["get_attr"] = None
+        bitwise_right_shift_node = PatternNode
+        bitwise_right_shift_node.op_types["call_function:aten.bitwise_right_shift.Tensor_Scalar"] = [const_node]
+        bitwise_and_node = PatternNode
+        bitwise_and_node.op_types["call_function:aten.bitwise_and.Scalar"] = [const_node]
+        stack_node = PatternNode
+        stack_node.op_types["call_function:aten.stack.default"] = [bitwise_and_node, bitwise_right_shift_node]
+
+        for node in graph_module.graph.nodes:
+            if str(node.op) == "call_function" and str(node.target) == "aten.stack.default":
+                enabled_ops = []
+                pattern_match = self.check_pattern(node, bitwise_and_node, enabled_ops)
+                if pattern_match:
+                    for pattern_op in enabled_ops:
+                        print(pattern_op.name)
+                        self._op_names_to_skip.add(pattern_op.name)
 
     def partition(self, exported_program: ExportedProgram) -> PartitionResult:
         """
@@ -127,15 +176,44 @@ class OpenvinoPartitioner(Partitioner):
         :param exported_program: The exported program.
         :return: A PartitionResult containing the partitioned graph and delegation tags.
         """
+
+        self._op_names_to_skip = set()
+        print("DEBUG - OpenvinoPartitioner - graph")
+        #print(exported_program.graph_module.code)
+        for node in exported_program.graph_module.graph.nodes:
+            if str(node.op).strip() == "call_function" and str(node.target.__name__).strip() == "aten.slice_copy.Tensor":
+            #if str(node.op).strip() == "call_function" and str(node.target.__name__).strip() == "aten.slice_copy.Tensor" and str(node.name).strip() == "aten_slice_copy_tensor_6":
+                print("\tDEBUG - OpenvinoPartitioner - slice_copy - op: ", node.op, ", target: ", node.target.__name__, ", name: ", node.name)
+                if not (len(node.all_input_nodes) == 3):
+                    continue
+                slice_copy_in0 = node.all_input_nodes[0]
+                if not (str(slice_copy_in0.op).strip() == "placeholder"):
+                    continue
+                print("\t\tDEBUG - OpenvinoPartitioner - slice_copy_in0 - op: ", slice_copy_in0.op, ", target: ", slice_copy_in0.target, ", name: ", slice_copy_in0.name)
+                slice_copy_in1 = node.all_input_nodes[1]
+                if not (str(slice_copy_in1.op).strip() == "call_function" and str(slice_copy_in1.target.__name__).strip() == "_local_scalar_dense.default"):
+                    continue
+                print("\t\tDEBUG - OpenvinoPartitioner - slice_copy_in1 - op: ", slice_copy_in1.op, ", target: ", slice_copy_in1.target.__name__, ", name: ", slice_copy_in1.name)
+                slice_copy_in2 = node.all_input_nodes[2]
+                if not (str(slice_copy_in2.op).strip() == "call_function" and str(slice_copy_in2.target.__name__).strip() == "add"):
+                    continue
+                print("\t\tDEBUG - OpenvinoPartitioner - slice_copy_in2 - op: ", slice_copy_in2.op, ", target: ", slice_copy_in2.target.__name__, ", name: ", slice_copy_in2.name)
+                #for input_node in node.all_input_nodes:
+                #    print("\tDEBUG - OpenvinoPartitioner - input_node - op: ", input_node.op, ", target: ", input_node.target, ", name: ", input_node.name)
+                self._op_names_to_skip.add(node.name)
+                
+        self.capture_nncf_patterns(exported_program.graph_module)
         partitioner = CapabilityBasedPartitioner(
             exported_program.graph_module,
             OpenvinoOperatorsSupport(self._op_types_to_skip, self._op_names_to_skip),
             allows_single_node_partition=True,
         )
         partition_list = partitioner.propose_partitions()
+        print("DEBUG - num_parts: ", len(partition_list))
 
         partition_tags = {}
         for partition in partition_list:
+            print("\tDEBUG - part - size: ", partition.size())
             for node in partition.nodes:
                 tag = f"tag{partition.id}"
                 node.meta["delegation_tag"] = tag

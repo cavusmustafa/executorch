@@ -70,6 +70,24 @@ if(EXECUTORCH_BUILD_OPENVINO_EXECUTOR_RUNNER)
 endif()
 
 
+if(EXECUTORCH_BUILD_OPENVINO_NANOGPT_RUNNER)
+    # Build executor runner binary for openvino backend
+    list(APPEND openvino_nanogpt_runner_libs openvino_backend executorch extension_module_static extension_tensor)
+
+    set(_openvino_nanogpt_runner__srcs
+        ${EXECUTORCH_ROOT}/examples/llm_manual/main.cpp
+        )
+    add_executable(openvino_nanogpt_runner ${_openvino_nanogpt_runner__srcs})
+
+    list(APPEND openvino_nanogpt_runner_libs)
+
+    target_link_libraries(
+      openvino_nanogpt_runner gflags portable_ops_lib ${openvino_nanogpt_runner_libs}
+    )
+    target_compile_options(openvino_nanogpt_runner PUBLIC ${_common_compile_options})
+endif()
+
+
 
 # Install OpenVINO backend library to the lib directory
 install(TARGETS openvino_backend DESTINATION lib)

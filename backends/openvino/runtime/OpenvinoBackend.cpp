@@ -102,22 +102,94 @@ exr::Error OpenvinoBackend::execute(
   size_t num_outputs = infer_request->get_compiled_model().outputs().size();
 
   // Set inputs
+  std::cout << "DEBUG - OpenvinoBackend - num_inputs: " << num_inputs << std::endl;
   for (size_t i = 0; i < num_inputs; i++) {
-    auto input_tensor = args[i]->toTensor();
-    ov::Shape input_shape(
-        input_tensor.sizes().begin(), input_tensor.sizes().end());
+    std::cout << "DEBUG - OpenvinoBackend - input - A - i: " << i << std::endl;
 
-    // Convert input tensor to OpenVINO tensor
-    ov::element::Type ov_type =
-        convert_to_openvino_type(input_tensor.scalar_type());
-    ov::Tensor ov_input_tensor(
-        ov_type, input_shape, input_tensor.mutable_data_ptr());
+    if (args[i]->isNone()) {
+        std::cout << "DEBUG - Module - forward - A - type: none" << std::endl;
+    } else if (args[i]->isInt()) {
+        std::cout << "DEBUG - Module - forward - A - type: int, val: " << args[i]->toInt() << std::endl;
+    } else if (args[i]->isDouble()) {
+        std::cout << "DEBUG - Module - forward - A - type: double" << std::endl;
+    } else if (args[i]->isBool()) {
+        std::cout << "DEBUG - Module - forward - A - type: bool" << std::endl;
+    } else if (args[i]->isScalar()) {
+        std::cout << "DEBUG - Module - forward - A - type: scalar" << std::endl;
+    } else if (args[i]->isTensor()) {
+        std::cout << "DEBUG - Module - forward - A - type: tensor, shape: [";
+        for (int j=0; j<args[i]->toTensor().dim(); j++) {
+            std::cout << args[i]->toTensor().size(j) << ", ";
+        }
+        std::cout << "]" << std::endl;
+    } else if (args[i]->isString()) {
+        std::cout << "DEBUG - Module - forward - A - type: string" << std::endl;
+    } else if (args[i]->isIntList()) {
+        std::cout << "DEBUG - Module - forward - A - type: int_list" << std::endl;
+    } else if (args[i]->isBoolList()) {
+        std::cout << "DEBUG - Module - forward - A - type: bool_list" << std::endl;
+    } else if (args[i]->isDoubleList()) {
+        std::cout << "DEBUG - Module - forward - A - type: double_list" << std::endl;
+    } else if (args[i]->isTensorList()) {
+        std::cout << "DEBUG - Module - forward - A - type: tensor_list" << std::endl;
+    } else if (args[i]->isListOptionalTensor()) {
+        std::cout << "DEBUG - Module - forward - A - type: list_optional_tensor" << std::endl;
+    } else {
+        std::cout << "DEBUG - Module - forward - A - type: no type available" << std::endl;
+    }
 
-    infer_request->set_input_tensor(i, ov_input_tensor);
+    if (args[i]->isInt()) {
+        //std::cout << "DEBUG - OpenvinoBackend - input - B.1" << std::endl;
+        //auto input_tensor = args[i]->toInt();
+        //std::cout << "DEBUG - OpenvinoBackend - input - B.2" << std::endl;
+        //ov::Shape input_shape(
+        //    input_tensor.sizes().begin(), input_tensor.sizes().end());
+
+        //std::cout << "DEBUG - OpenvinoBackend - input - B.3" << std::endl;
+        // Convert input tensor to OpenVINO tensor
+        //std::cout << "DEBUG - OpenvinoBackend - input - B.4" << std::endl;
+        //int64_t val = args[i]->toInt();
+        //int64_t val = i;
+        int64_t *val = &(args[i]->payload.copyable_union.as_int);
+        //std::cout << "DEBUG - OpenvinoBackend - input - B.5 - val: " << val << std::endl;
+        //ov::Tensor ov_input_tensor(ov::element::i64, ov::Shape{}, &val);
+        //std::vector<int64_t> val = {args[i]->toInt()};
+        //ov::Tensor ov_input_tensor(ov::element::i64, ov::Shape{1}, &val);
+        ov::Tensor ov_input_tensor(ov::element::i64, ov::Shape{1}, val);
+        std::cout << "DEBUG - OpenvinoBackend - input - B.6 - val: " << ((int64_t*)(ov_input_tensor.data<int64_t>()))[0] << ", byte_size: " << ov_input_tensor.get_byte_size() << std::endl;
+
+        infer_request->set_input_tensor(i, ov_input_tensor);
+        //std::cout << "DEBUG - OpenvinoBackend - input - B.7" << std::endl;
+    } else {
+        //std::cout << "DEBUG - OpenvinoBackend - input - C.1" << std::endl;
+        auto input_tensor = args[i]->toTensor();
+        //std::cout << "DEBUG - OpenvinoBackend - input - C.2" << std::endl;
+        ov::Shape input_shape(
+            input_tensor.sizes().begin(), input_tensor.sizes().end());
+
+        //std::cout << "DEBUG - OpenvinoBackend - input - C.3" << std::endl;
+        // Convert input tensor to OpenVINO tensor
+        ov::element::Type ov_type =
+            convert_to_openvino_type(input_tensor.scalar_type());
+        //std::cout << "DEBUG - OpenvinoBackend - input - C.4" << std::endl;
+        ov::Tensor ov_input_tensor(
+            ov_type, input_shape, input_tensor.mutable_data_ptr());
+        //std::cout << "DEBUG - OpenvinoBackend - input - C.5" << std::endl;
+
+        infer_request->set_input_tensor(i, ov_input_tensor);
+        //std::cout << "DEBUG - OpenvinoBackend - input - C.6" << std::endl;
+    }
   }
 
   // Set outputs
+  std::cout << "DEBUG - OpenvinoBackend - num_outputs: " << num_outputs << std::endl;
   for (size_t i = 0; i < num_outputs; i++) {
+    //args[num_inputs + i]->toTensor().unsafeGetTensorImpl()->set_size(1,1);
+    std::cout << "DEBUG - OpenvinoBackend output - i: " << i << " - type: tensor, shape: [";
+    for (int j=0; j<args[num_inputs + i]->toTensor().dim(); j++) {
+        std::cout << args[num_inputs + i]->toTensor().size(j) << ", ";
+    }
+    std::cout << "]" << std::endl; 
     auto output_tensor = args[num_inputs + i]->toTensor();
     ov::Shape output_shape(
         output_tensor.sizes().begin(), output_tensor.sizes().end());
@@ -133,7 +205,14 @@ exr::Error OpenvinoBackend::execute(
 
   // Execute the inference
   infer_request->infer();
+  //auto out_t = infer_request->get_output_tensor(0);
+  //std::cout << "DEBUG - OpenvinoBackend output - after infer tensor - shape: " << out_t.get_shape() << std::endl;
+  //for (int j=0; j<args[num_inputs + i]->toTensor().dim(); j++) {
+  //    std::cout << args[num_inputs + i]->toTensor().size(j) << ", ";
+  //}
+  //std::cout << "]" << std::endl;
 
+  //std::cout << "DEBUG - OpenvinoBackend - DD" << std::endl;
   return exr::Error::Ok;
 }
 
