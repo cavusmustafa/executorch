@@ -52,3 +52,4 @@ class OpenvinoBackend(BackendDetails):
         model_bytes = compiled.export_model()
 
         return PreprocessResult(processed_bytes=model_bytes.getvalue())
+        #return PreprocessResult(processed_bytes=model_bytes)
