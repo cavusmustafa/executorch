@@ -413,6 +413,7 @@ class LLMEdgeManager:
                 self.pre_autograd_graph_module = m
             return self
         elif (self.nncf_compression):
+            print("DEBUG - executorch - builder - quantize - A")
             tokenizer = get_tokenizer(self.tokenizer_path)
 
             def transform_fn(
@@ -439,6 +440,7 @@ class LLMEdgeManager:
                                                                 ratio=0.8,
                                                                 sensitivity_metric=nncf.SensitivityMetric.HESSIAN_INPUT_ACTIVATION,
                                                             )
+            print("DEBUG - executorch - builder - quantize - B")
             return self
         else:
             logging.info("No quantizer provided, passing...")
@@ -448,6 +450,7 @@ class LLMEdgeManager:
         """
         Export the model to Edge dialect and retrieve a LLMEdgeManager.
         """
+        print("DEBUG - executorch - builder - export_to_edge - A")
         dynamic_shape = self._get_dynamic_shape()
         edge_config = self._get_edge_config()
 
@@ -467,6 +470,8 @@ class LLMEdgeManager:
                 )
 
             with override_export_behaviour:
+                #if (self.nncf_compression):
+                #    from executorch.backends.openvino.utils import export_to_edge
                 self.edge_manager = export_to_edge(
                     self.pre_autograd_graph_module,  # pyre-fixme[6]
                     self.example_inputs,
@@ -476,6 +481,7 @@ class LLMEdgeManager:
                     edge_compile_config=edge_config,
                     verbose=self.verbose,
                 )
+        print("DEBUG - executorch - builder - export_to_edge - B")
         return self
 
     def to_backend(self, partitioners: Optional[List[Partitioner]]) -> "LLMEdgeManager":

@@ -73,7 +73,7 @@ class OpenvinoOperatorsSupport(OperatorSupportBase):
             print(
                 f"[OpenVINO Backend] The {op_type} operator with name '{node.name}' is skipped."
             )
-            return False
+            return True
 
         supported_ops = OperatorSupport(options)._support_dict
         if op_type == "getitem":
@@ -129,30 +129,48 @@ class OpenvinoPartitioner(Partitioner):
         return (ops_not_decompose, None)
     
     def check_pattern(self, node: torch.fx.Node, pattern: PatternNode, enabled_ops: list) -> bool:
+        print("\t\tDEBUG - capture_nncf_patterns - check_pattern - A.0 - op: ", node.op)
         if node.op == "call_function":
-            if ("call_function" + ":" + str(node.target)) in pattern.op_types:
+            print("\t\tDEBUG - capture_nncf_patterns - check_pattern - A.1")
+            if ("call_function" + ":" + str(node.target.__name__)) in pattern.op_types:
+                print("\t\tDEBUG - capture_nncf_patterns - check_pattern - B - target: ", node.target.__name__)
                 pt_input_nodes = node.all_input_nodes
-                pattern_input_ops = pattern.op_types["call_function" + ":" + str(node.target)]
+                pattern_input_ops = pattern.op_types["call_function" + ":" + str(node.target.__name__)]
                 if pattern_input_ops is None:
                     enabled_ops.append(node)
+                    print("\t\tDEBUG - capture_nncf_patterns - check_pattern - C.1")
                     return True
                 if len(pt_input_nodes) != len(pattern_input_ops):
+                    print("\t\tDEBUG - capture_nncf_patterns - check_pattern - C.2")
                     return False
                 for i in range(len(pt_input_nodes)):
                     if not self.check_pattern(pt_input_nodes[i], pattern_input_ops[i], enabled_ops):
+                        print("\t\tDEBUG - capture_nncf_patterns - check_pattern - C.3")
                         return False
                 enabled_ops.append(node)
+                print("\t\tDEBUG - capture_nncf_patterns - check_pattern - C.4")
                 return True
         elif node.op == "get_attr":
             if "get_attr" in pattern.op_types:
+                print("\t\tDEBUG - capture_nncf_patterns - check_pattern - A.2")
                 return True
             else:
+                print("\t\tDEBUG - capture_nncf_patterns - check_pattern - A.3")
                 return False
+        elif node.op == "placeholder":
+            if "placeholder" in pattern.op_types:
+                print("\t\tDEBUG - capture_nncf_patterns - check_pattern - A.2")
+                return True
+            else:
+                print("\t\tDEBUG - capture_nncf_patterns - check_pattern - A.3")
+                return False
+        print("\t\tDEBUG - capture_nncf_patterns - check_pattern - A.4")
         return False
 
     def capture_nncf_patterns(self, graph_module: torch.fx.GraphModule):
         const_node = PatternNode
         const_node.op_types["get_attr"] = None
+        const_node.op_types["placeholder"] = None
         bitwise_right_shift_node = PatternNode
         bitwise_right_shift_node.op_types["call_function:aten.bitwise_right_shift.Tensor_Scalar"] = [const_node]
         bitwise_and_node = PatternNode
@@ -160,11 +178,15 @@ class OpenvinoPartitioner(Partitioner):
         stack_node = PatternNode
         stack_node.op_types["call_function:aten.stack.default"] = [bitwise_and_node, bitwise_right_shift_node]
 
+        print("DEBUG - capture_nncf_patterns - A")
         for node in graph_module.graph.nodes:
-            if str(node.op) == "call_function" and str(node.target) == "aten.stack.default":
+            print("\tDEBUG - capture_nncf_patterns - B - op: ", node.op, ", target: ", node.target)
+            if str(node.op) == "call_function" and str(node.target.__name__) == "aten.stack.default":
+                print("\tDEBUG - capture_nncf_patterns - C - stack found")
                 enabled_ops = []
-                pattern_match = self.check_pattern(node, bitwise_and_node, enabled_ops)
+                pattern_match = self.check_pattern(node, stack_node, enabled_ops)
                 if pattern_match:
+                    print("\tDEBUG - capture_nncf_patterns - D - match")
                     for pattern_op in enabled_ops:
                         print(pattern_op.name)
                         self._op_names_to_skip.add(pattern_op.name)
