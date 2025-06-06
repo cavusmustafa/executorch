@@ -470,8 +470,8 @@ class LLMEdgeManager:
                 )
 
             with override_export_behaviour:
-                #if (self.nncf_compression):
-                #    from executorch.backends.openvino.utils import export_to_edge
+                if (self.nncf_compression):
+                    from executorch.backends.openvino.utils import export_to_edge
                 self.edge_manager = export_to_edge(
                     self.pre_autograd_graph_module,  # pyre-fixme[6]
                     self.example_inputs,
