@@ -39,6 +39,7 @@ from executorch.extension.llm.export.builder import DType, LLMEdgeManager
 from executorch.extension.llm.export.partitioner_lib import (
     get_coreml_partitioner,
     get_mps_partitioner,
+    get_openvino_partitioner,
     get_qnn_partitioner,
     get_vulkan_partitioner,
     get_xnnpack_partitioner,
@@ -443,6 +444,14 @@ def build_args_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Delegate llama2 to qnn backend (Qualcomm), please use it --kv_cahce=True",
     )
+    parser.add_argument("--openvino", action="store_true")
+    parser.add_argument(
+        "--openvino_device",
+        type=str,
+        default="CPU",
+        choices=["CPU", "GPU"],
+        help="Specify the device for Openvino (CPU or GPU).",
+    )
 
     parser.add_argument(
         "--expand_rope_table",
@@ -540,6 +549,13 @@ def build_args_parser() -> argparse.ArgumentParser:
         "--input_prune_map",
         default=None,
         help="path to the input pruning token mapping file (token_map.json)",
+    )
+
+    parser.add_argument(
+        "--nncf_compression",
+        default=False,
+        action="store_true",
+        help="Enables nncf compression for openvino backend",
     )
 
     parser.add_argument(
@@ -857,6 +873,8 @@ def _to_edge_and_lower_llama(  # noqa: C901
     mps: bool = False,
     coreml: bool = False,
     qnn: bool = False,
+    openvino: bool = False,
+    openvino_device: str = "CPU",
     dtype_override: str = "fp32",
     enable_dynamic_shape: bool = True,
     use_kv_cache: bool = False,
@@ -900,6 +918,10 @@ def _to_edge_and_lower_llama(  # noqa: C901
         )
         partitioners.append(coreml_partitioner)
         modelname = f"coreml_{modelname}"
+
+    if openvino:
+        partitioners.append(get_openvino_partitioner(openvino_device))
+        modelname = f"openvino_{modelname}"
 
     if qnn:
         logging.warning(
@@ -1068,6 +1090,8 @@ def _export_llama(llm_config: LlmConfig) -> LLMEdgeManager:  # noqa: C901
             mps=llm_config.backend.mps.enabled,
             coreml=llm_config.backend.coreml.enabled,
             qnn=llm_config.backend.qnn.enabled,
+            openvino=llm_config.backend.openvino.enabled,
+            openvino_device=llm_config.backend.openvino.device,
             dtype_override=llm_config.model.dtype_override,
             enable_dynamic_shape=llm_config.model.enable_dynamic_shape,
             use_kv_cache=llm_config.model.use_kv_cache,
@@ -1190,6 +1214,7 @@ def _load_llama_model(llm_config: LlmConfig) -> "LLMEdgeManager":
         use_legacy_export=llm_config.backend.qnn.enabled,
         save_exported_program=llm_config.export.export_only,
         verbose=llm_config.debug.verbose,
+        nncf_compression=llm_config.backend.openvino.nncf_compression,
         metadata=_load_llama_model_metadata(
             WeightType.FAIRSEQ2 if llm_config.base.fairseq2 else WeightType.LLAMA,
             llm_config.model.use_kv_cache,
