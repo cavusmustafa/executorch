@@ -215,6 +215,70 @@ def get_qnn_quantizer(
     return qnn_quantizer, quant_dtype
 
 
+def get_ov_quantizer(
+    pt2e_quantize: str,
+    group_size: int = 32,
+):
+    try:
+        from executorch.backends.openvino.quantizer import OpenVINOQuantizer, QuantizationMode
+        import nncf
+    except ImportError:
+        raise ImportError(
+            "Please install nncf via backends/openvino/requirements.txt"
+        )
+    
+    backend, quant_config = pt2e_quantize.split("_")
+    assert (
+        backend == "openvino"
+    ), f"The quantization config is for backend {backend} instead of openvino."
+    assert group_size != None, "Group Size None is Not Supported. It should be set to -1 for per-channel."
+
+    # Manually ignore MP layers.
+    fp_node_names = [
+        "linear_14",
+        "linear_15",
+        "linear_35",
+        "linear_56",
+        "linear_57",
+        "linear_63",
+        "linear_70",
+        "linear_71",
+        "linear_77",
+        "linear_78",
+        "linear_81",
+        "linear_84",
+        "linear_85",
+        "linear_88",
+        "linear_89",
+        "linear_91",
+        "linear_92",
+        "linear_95",
+        "linear_96",
+        "linear_98",
+        "linear_99",
+        "linear_102",
+        "linear_103",
+        "linear_105",
+        "linear_106",
+        "linear_109",
+        "linear_110",]
+
+    if quant_config == "8da4w":
+        mode = QuantizationMode.INT4WO_SYM
+
+    elif quant_config == "8da8w":
+        group_size = -1
+        mode = QuantizationMode.INT8WO_SYM
+    else:
+        raise AssertionError(
+            f"No support for quant type {quant_config}. Support 8a4w, 8a8w only."
+        )
+    ov_quantizer = OpenVINOQuantizer(mode=mode, group_size=group_size)
+    ov_quantizer.set_ignored_scope(names=fp_node_names)
+
+    return ov_quantizer
+
+
 def get_coreml_quantizer(pt2e_quantize: str):
     try:
         from coremltools.optimize.torch.quantization.quantization_config import (
