@@ -70,6 +70,7 @@ exr::Result<exr::DelegateHandle*> OpenvinoBackend::init(
       device = static_cast<char*>(compile_spec.value.buffer);
   }
 
+  //core.set_property(device, ov::enable_profiling(true));
   // Import the model
   auto compiled_model = core.import_model(compiled_stream, device);
 
@@ -85,7 +86,7 @@ exr::Result<exr::DelegateHandle*> OpenvinoBackend::init(
   ExecutionHandle* handle = allocator->allocateInstance<ExecutionHandle>();
   new (handle) ExecutionHandle;
   handle->compiled_model = std::make_shared<ov::CompiledModel>(compiled_model);
-  handle->infer_request = infer_request;
+  //handle->infer_request = infer_request;
 
   return handle;
 }
@@ -94,9 +95,12 @@ exr::Error OpenvinoBackend::execute(
     exr::BackendExecutionContext& context,
     exr::DelegateHandle* input_handle,
     exr::Span<exr::EValue*> args) const {
+  //auto t1 = std::chrono::high_resolution_clock::now();
   ExecutionHandle* execution_handle = (ExecutionHandle*)input_handle;
 
-  auto infer_request = execution_handle->infer_request;
+  //auto infer_request = execution_handle->infer_request;
+  std::shared_ptr<ov::InferRequest> infer_request =
+      std::make_shared<ov::InferRequest>(execution_handle->compiled_model->create_infer_request());
 
   size_t num_inputs = infer_request->get_compiled_model().inputs().size();
   size_t num_outputs = infer_request->get_compiled_model().outputs().size();
@@ -151,8 +155,28 @@ exr::Error OpenvinoBackend::execute(
     infer_request->set_output_tensor(i, ov_output_tensor);
   }
 
+  //auto t2 = std::chrono::high_resolution_clock::now();
   // Execute the inference
   infer_request->infer();
+  //infer_request->start_async();
+  //infer_request->wait();
+  //auto t3 = std::chrono::high_resolution_clock::now();
+  //auto infer_time = std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2);
+  //auto total_time = std::chrono::duration_cast<std::chrono::microseconds>(t3 - t1);
+  //std::cout << "DEBUG - timing - infer: " << infer_time.count() << ", total: " << total_time.count() << std::endl;
+
+  //auto infos = infer_request->get_profiling_info();
+  //size_t num = infos.size();
+  ////profiling_infos->size = num;                                                                                                                                                                                                                                   
+  //std::cout << "DEBUG - profiling - graph" << std::endl;
+  //for (size_t i = 0; i < num; i++) {
+  //    auto type = infos[i].node_type;
+  //    auto name = infos[i].node_name;
+  //    auto exec_type = infos[i].exec_type;
+  //    auto real_time = infos[i].real_time.count();
+  //    auto cpu_time = infos[i].cpu_time.count();
+  //    std::cout << "\tDEBUG - profiling - node - type: " << type << ", name: " << name << ", exec_type: " << exec_type << ", real_time: " << real_time << ", cpu_time: " << cpu_time << std::endl;
+  //}
 
   return exr::Error::Ok;
 }

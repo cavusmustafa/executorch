@@ -28,6 +28,11 @@ include(${EXECUTORCH_ROOT}/tools/cmake/Utils.cmake)
 # Let files say "include <executorch/path/to/header.h>".
 set(_common_include_directories ${EXECUTORCH_ROOT}/..)
 
+#include(CMakeFindDependencyMacro)
+find_package(absl CONFIG REQUIRED PATHS ${EXECUTORCH_ROOT}/cmake-out)
+find_package(re2 CONFIG REQUIRED PATHS ${EXECUTORCH_ROOT}/cmake-out)
+find_package(tokenizers CONFIG REQUIRED PATHS ${EXECUTORCH_ROOT}/cmake-out)
+
 # find `executorch` libraries Same as for gflags
 find_package(executorch CONFIG REQUIRED PATHS ${EXECUTORCH_ROOT}/cmake-out)
 executorch_target_link_options_shared_lib(executorch)
@@ -37,24 +42,30 @@ set(link_libraries gflags)
 list(APPEND link_libraries portable_ops_lib portable_kernels)
 executorch_target_link_options_shared_lib(portable_ops_lib)
 
-if(USE_XNNPACK_BACKEND)
-  set(xnnpack_backend_libs xnnpack_backend XNNPACK microkernels-prod)
-  list(APPEND link_libraries ${xnnpack_backend_libs})
-  executorch_target_link_options_shared_lib(xnnpack_backend)
-endif()
+#if(USE_XNNPACK_BACKEND)
+#set(xnnpack_backend_libs xnnpack_backend XNNPACK microkernels-prod)
+#if(TARGET kleidiai)
+#  list(APPEND xnnpack_backend_libs kleidiai)
+#endif()
+#list(APPEND link_libraries ${xnnpack_backend_libs})
+#executorch_target_link_options_shared_lib(xnnpack_backend)
+#endif()
 
 if(USE_OPENVINO_BACKEND)
-  add_subdirectory(${EXECUTORCH_ROOT}/backends/openvino openvino_backend)
-
-  target_include_directories(
-    openvino_backend
-    INTERFACE
-      ${CMAKE_CURRENT_BINARY_DIR}/../../include
-      ${CMAKE_CURRENT_BINARY_DIR}/../../include/executorch/runtime/core/portable_type/c10
-      ${CMAKE_CURRENT_BINARY_DIR}/../../lib
-  )
+  find_package(OpenVINO REQUIRED)
   list(APPEND link_libraries openvino_backend)
   executorch_target_link_options_shared_lib(openvino_backend)
+  #add_subdirectory(${EXECUTORCH_ROOT}/backends/openvino openvino_backend)
+
+  #target_include_directories(
+  #  openvino_backend
+  #  INTERFACE
+  #    ${CMAKE_CURRENT_BINARY_DIR}/../../include
+  #    ${CMAKE_CURRENT_BINARY_DIR}/../../include/executorch/runtime/core/portable_type/c10
+  #    ${CMAKE_CURRENT_BINARY_DIR}/../../lib
+  #)
+  #list(APPEND link_libraries openvino_backend)
+  #executorch_target_link_options_shared_lib(openvino_backend)
 endif()
 
 list(APPEND link_libraries extension_threadpool pthreadpool)
