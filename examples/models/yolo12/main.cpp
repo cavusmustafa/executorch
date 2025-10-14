@@ -1,4 +1,6 @@
 #include "inference.h"
+#include <thread>
+#include <future>
 
 #include <gflags/gflags.h>
 
@@ -97,32 +99,94 @@ int main(int argc, char** argv) {
   unsigned long long iters = 0;
   // Show progress every 10%
   unsigned long long progress_bar_tick = std::round(video_lenght / 10);
+
+  struct frame_ctx {
+    cv::Mat frame;
+    cv::Mat scaled_input;
+    cv::Mat blob;
+    int pad_x;
+    int pad_y;
+    float scale;
+  };
+  std::queue<frame_ctx*> ready_q;
+  std::queue<std::pair<frame_ctx*, std::future<cv::Mat>>> scale_q;
+  std::queue<std::pair<frame_ctx*, std::future<std::shared_ptr<executorch::aten::Tensor>>>> input_q;
+  std::queue<std::pair<frame_ctx*, std::future<executorch::aten::Tensor>>> execute_q;
+  std::queue<std::pair<frame_ctx*, std::future<std::vector<Detection>>>> output_q;
+  const et_timestamp_t before_execute = et_pal_current_ticks();
+  size_t frame_queue_size = 2;
   while (true) {
     cv::Mat frame;
     cap >> frame;
-
-    if (frame.empty())
+ 
+    if (frame.empty() && ready_q.empty() && scale_q.empty() && input_q.empty() && execute_q.empty() && output_q.empty())
       break;
 
-    const et_timestamp_t before_execute = et_pal_current_ticks();
-    std::vector<Detection> output =
-        infer_yolo_once(yolo_module, frame, img_dims, DEFAULT_YOLO_CONFIG);
-
-    for (auto& detection : output) {
-      draw_detection(frame, detection, cv::Scalar(0, 0, 255));
+    if (!frame.empty()) {
+      frame_ctx *new_frame_ctx = new frame_ctx;
+      new_frame_ctx->frame = frame;
+      ready_q.push(new_frame_ctx);
     }
-    const et_timestamp_t after_execute = et_pal_current_ticks();
-    time_spent_executing += after_execute - before_execute;
-    iters++;
 
-    if (!(iters % progress_bar_tick)) {
-      const int precent_ready = (100 * iters) / video_lenght;
-      std::cout << iters << " out of " << video_lenght
-                << " frames are are processed (" << precent_ready << "\%)"
-                << std::endl;
+    while (!ready_q.empty() && scale_q.size() < frame_queue_size) {
+      frame_ctx *scale_f = ready_q.front();
+      scale_q.push(std::make_pair(scale_f, std::async(std::launch::async, scale_with_padding, std::ref(scale_f->frame), &(scale_f->pad_x), &(scale_f->pad_y), &(scale_f->scale), img_dims)));
+      ready_q.pop();
     }
-    video.write(frame);
+    while (!scale_q.empty() && input_q.size() < frame_queue_size) {
+      auto status = scale_q.front().second.wait_for(std::chrono::milliseconds(1));
+      if (status == std::future_status::ready) {
+          scale_q.front().first->scaled_input = scale_q.front().second.get();
+          input_q.push(std::make_pair(scale_q.front().first, std::async(std::launch::async, prepare_input, std::ref(scale_q.front().first->scaled_input), std::ref(scale_q.front().first->blob), img_dims)));
+          scale_q.pop();
+      } else {
+          break;
+      }
+    }
+    while (!input_q.empty() && execute_q.size() < frame_queue_size) {
+      auto status = input_q.front().second.wait_for(std::chrono::milliseconds(1));
+      if (status == std::future_status::ready) {
+          std::shared_ptr<executorch::aten::Tensor> prepared_input = input_q.front().second.get();
+          execute_q.push(std::make_pair(input_q.front().first, std::async(std::launch::async, execute_frame, std::ref(yolo_module), prepared_input)));
+          input_q.pop();
+      } else {
+          break;
+      }
+    }
+    while (!execute_q.empty() && output_q.size() < frame_queue_size) {
+      auto status = execute_q.front().second.wait_for(std::chrono::milliseconds(1));
+      if (status == std::future_status::ready) {
+          executorch::aten::Tensor raw_output = execute_q.front().second.get();
+          output_q.push(std::make_pair(execute_q.front().first, std::async(std::launch::async, process_output, std::ref(raw_output), DEFAULT_YOLO_CONFIG, execute_q.front().first->pad_x, execute_q.front().first->pad_y, execute_q.front().first->scale)));
+          execute_q.pop();
+      } else {
+          break;
+      }
+    }
+    while (!output_q.empty()) {
+      auto status = output_q.front().second.wait_for(std::chrono::milliseconds(1));
+      if (status == std::future_status::ready) {
+          std::vector<Detection> output = output_q.front().second.get();
+          for (auto& detection : output) {
+            draw_detection(output_q.front().first->frame, detection, cv::Scalar(0, 0, 255));
+          }
+          iters++;
+
+          if (!(iters % progress_bar_tick)) {
+            const int precent_ready = (100 * iters) / video_lenght;
+            std::cout << iters << " out of " << video_lenght
+                      << " frames are are processed (" << precent_ready << "\%)"
+                      << std::endl;
+          }
+          video.write(output_q.front().first->frame);
+          output_q.pop();
+      } else {
+          break;
+      }
+    }
   }
+  const et_timestamp_t after_execute = et_pal_current_ticks();
+  time_spent_executing = after_execute - before_execute;
 
   const auto tick_ratio = et_pal_ticks_to_ns_multiplier();
   constexpr auto NANOSECONDS_PER_MILLISECOND = 1000000;
@@ -130,9 +194,9 @@ int main(int argc, char** argv) {
   double elapsed_ms = static_cast<double>(time_spent_executing) *
       tick_ratio.numerator / tick_ratio.denominator /
       NANOSECONDS_PER_MILLISECOND;
-  std::cout << "Model executed successfully " << iters << " times in "
+  std::cout << "Model executed successfully " << (iters-100) << " times in "
             << elapsed_ms << " ms." << std::endl;
-  std::cout << "Average detection time: " << elapsed_ms / iters << " ms."
+  std::cout << "Average detection time: " << elapsed_ms / (iters-100) << " ms."
             << std::endl;
   cap.release();
   video.release();
