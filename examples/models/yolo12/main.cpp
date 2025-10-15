@@ -194,9 +194,9 @@ int main(int argc, char** argv) {
   double elapsed_ms = static_cast<double>(time_spent_executing) *
       tick_ratio.numerator / tick_ratio.denominator /
       NANOSECONDS_PER_MILLISECOND;
-  std::cout << "Model executed successfully " << (iters-100) << " times in "
+  std::cout << "Model executed successfully " << iters << " times in "
             << elapsed_ms << " ms." << std::endl;
-  std::cout << "Average detection time: " << elapsed_ms / (iters-100) << " ms."
+  std::cout << "Average detection time: " << elapsed_ms / iters << " ms."
             << std::endl;
   cap.release();
   video.release();
