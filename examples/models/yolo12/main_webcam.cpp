@@ -77,7 +77,10 @@ int main(int argc, char** argv) {
   std::cout << "]" << std::endl;
   const cv::Size img_dims = {model_input_shape[3], model_input_shape[2]};
 
-  cv::VideoCapture cap(FLAGS_input_path.c_str());
+  cv::namedWindow("Video Detection", cv::WND_PROP_FULLSCREEN);
+  cv::setWindowProperty("Video Detection", cv::WND_PROP_FULLSCREEN, cv::WINDOW_FULLSCREEN);
+  //cv::VideoCapture cap(FLAGS_input_path.c_str());
+  cv::VideoCapture cap(0);
   if (!cap.isOpened()) {
     std::cout << "Error opening video stream or file" << std::endl;
     return -1;
@@ -91,7 +94,7 @@ int main(int argc, char** argv) {
   cv::VideoWriter video(
       FLAGS_output_path.c_str(),
       cv::VideoWriter::fourcc('m', 'p', '4', 'v'),
-      cap.get(cv::CAP_PROP_FPS),
+      30,
       cv::Size(frame_width, frame_height));
 
   std::cout << "Start the detection..." << std::endl;
@@ -118,11 +121,11 @@ int main(int argc, char** argv) {
   while (true) {
     cv::Mat frame;
     cap >> frame;
- 
+
     if (frame.empty() && ready_q.empty() && scale_q.empty() && input_q.empty() && execute_q.empty() && output_q.empty())
       break;
 
-    if (!frame.empty()) {
+    if (!frame.empty() && ready_q.size() < 1) {
       frame_ctx *new_frame_ctx = new frame_ctx;
       new_frame_ctx->frame = frame;
       ready_q.push(new_frame_ctx);
@@ -172,17 +175,21 @@ int main(int argc, char** argv) {
           }
           iters++;
 
-          if (!(iters % progress_bar_tick)) {
-            const int precent_ready = (100 * iters) / video_lenght;
-            std::cout << iters << " out of " << video_lenght
-                      << " frames are are processed (" << precent_ready << "\%)"
-                      << std::endl;
-          }
-          video.write(output_q.front().first->frame);
+          //if (!(iters % progress_bar_tick)) {
+          //  const int precent_ready = (100 * iters) / video_lenght;
+          //  std::cout << iters << " out of " << video_lenght
+          //            << " frames are are processed (" << precent_ready << "\%)"
+          //            << std::endl;
+          //}
+          //video.write(output_q.front().first->frame);
+	  cv::imshow("Video Detection", output_q.front().first->frame);
           output_q.pop();
       } else {
           break;
       }
+    }
+    if (cv::waitKey(10) == 'q') {
+        break;
     }
   }
   const et_timestamp_t after_execute = et_pal_current_ticks();
