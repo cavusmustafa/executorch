@@ -1,6 +1,7 @@
 #!/bin/bash
 
-cp main_inpfile.cpp main.cpp
+#cp main_inpfile.cpp main.cpp
+cp main_webcam.cpp main.cpp
 
 rm -rf build
 mkdir build && cd build

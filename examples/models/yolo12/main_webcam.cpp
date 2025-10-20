@@ -116,7 +116,10 @@ int main(int argc, char** argv) {
   std::queue<std::pair<frame_ctx*, std::future<std::shared_ptr<executorch::aten::Tensor>>>> input_q;
   std::queue<std::pair<frame_ctx*, std::future<executorch::aten::Tensor>>> execute_q;
   std::queue<std::pair<frame_ctx*, std::future<std::vector<Detection>>>> output_q;
+  size_t fps_count = 0;
+  double fps = 0;
   const et_timestamp_t before_execute = et_pal_current_ticks();
+  et_timestamp_t last_fps_time = et_pal_current_ticks();
   size_t frame_queue_size = 2;
   while (true) {
     cv::Mat frame;
@@ -174,6 +177,24 @@ int main(int argc, char** argv) {
             draw_detection(output_q.front().first->frame, detection, cv::Scalar(0, 0, 255));
           }
           iters++;
+
+	  fps_count++;
+          const et_timestamp_t current_fps_time = et_pal_current_ticks();
+          et_timestamp_t time_spent_executing = current_fps_time - last_fps_time;
+          const auto tick_ratio = et_pal_ticks_to_ns_multiplier();
+          //constexpr auto NANOSECONDS_PER_MILLISECOND = 1000000;
+          constexpr auto NANOSECONDS_PER_MILLISECOND = 1000000000;
+
+          double elapsed_sec = static_cast<double>(time_spent_executing) *
+              tick_ratio.numerator / tick_ratio.denominator /
+              NANOSECONDS_PER_MILLISECOND;
+	  if (elapsed_sec >= 1.0) {
+            fps = static_cast<double>(fps_count) / elapsed_sec;
+	    fps_count = 0;
+	    last_fps_time = current_fps_time;
+	  }
+	  std::string fps_text = "FPS: " + std::to_string(static_cast<int>(std::round(fps)));
+          cv::putText(output_q.front().first->frame, fps_text, cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX, 1, cv::Scalar(0, 255, 0), 2);
 
           //if (!(iters % progress_bar_tick)) {
           //  const int precent_ready = (100 * iters) / video_lenght;
