@@ -3,6 +3,7 @@
 
 #include <iostream>
 #include <vector>
+#include <mutex>
 
 #include <executorch/extension/module/module.h>
 #include <executorch/extension/tensor/tensor.h>
@@ -17,6 +18,8 @@ using executorch::extension::from_blob;
 using executorch::extension::Module;
 using executorch::runtime::Error;
 using executorch::runtime::Result;
+
+std::mutex execute_mutex;
 
 struct Detection {
   int class_id{0};
@@ -59,22 +62,24 @@ cv::Mat scale_with_padding(
   return result;
 }
 
-std::vector<Detection> infer_yolo_once(
-    Module& module,
-    cv::Mat input,
-    cv::Size img_dims,
-    const DetectionConfig yolo_config) {
-  int pad_x, pad_y;
-  float scale;
-  input = scale_with_padding(input, &pad_x, &pad_y, &scale, img_dims);
+std::shared_ptr<executorch::aten::Tensor> prepare_input(
+    cv::Mat& input,
+    cv::Mat& blob,
+    cv::Size img_dims) {
 
-  cv::Mat blob;
   cv::dnn::blobFromImage(
       input, blob, 1.0 / 255.0, img_dims, cv::Scalar(), true, false);
   const auto t_input = from_blob(
       (void*)blob.data,
       std::vector<int>(blob.size.p, blob.size.p + blob.dims),
       ScalarType::Float);
+  return t_input;
+}
+
+executorch::aten::Tensor execute_frame(
+    Module& module,
+    std::shared_ptr<executorch::aten::Tensor> t_input) {
+  std::lock_guard<std::mutex> lock(execute_mutex);
   const auto result = module.forward(t_input);
 
   ET_CHECK_MSG(
@@ -82,9 +87,15 @@ std::vector<Detection> infer_yolo_once(
       "Execution of method forward failed with status 0x%" PRIx32,
       (uint32_t)result.error());
 
-  const auto t = result->at(0).toTensor(); // Using only the 0 output
+  return result->at(0).toTensor(); // Using only the 0 output
   // yolov8 has an output of shape (batchSize, 84,  8400) (Num classes +
   // box[x,y,w,h])
+}
+
+std::vector<Detection> process_output(
+    executorch::aten::Tensor& t,
+    const DetectionConfig yolo_config,
+    int pad_x, int pad_y, float scale) {
   cv::Mat mat_output(t.dim() - 1, t.sizes().data() + 1, CV_32FC1, t.data_ptr());
 
   std::vector<int> class_ids;
@@ -148,4 +159,5 @@ std::vector<Detection> infer_yolo_once(
 
   return detections;
 }
+
 #endif // INFERENCE_H
