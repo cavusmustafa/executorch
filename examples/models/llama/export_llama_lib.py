@@ -1180,6 +1180,15 @@ def _export_llama(llm_config: LlmConfig) -> LLMEdgeManager:  # noqa: C901
             openvino_device=llm_config.backend.openvino.device,
             verbose=llm_config.debug.verbose,
         )
+    elif llm_config.backend.openvino.enabled:
+        builder = _to_edge_and_lower_llama_openvino(
+            builder_exported,
+            modelname,
+            quantizers,
+            additional_passes,
+            openvino_device=llm_config.backend.openvino.device,
+            verbose=llm_config.debug.verbose,
+        )
     else:
         builder = _to_edge_and_lower_llama(
             builder_exported,
