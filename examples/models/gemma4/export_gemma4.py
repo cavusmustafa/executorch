@@ -452,6 +452,10 @@ def _export_text_decoder(
     variant: str = "e2b",
     quantize_kv_cache: bool = False,
     use_custom_sdpa: bool = True,
+    enable_dynamic_shape: bool = True,
+    model_dtype: torch.dtype = torch.float32,
+    static_seq_len: int = 770,
+    ov_quantize: str = "none",
 ):
     """Export text decoder. Returns ExportedProgram."""
     from executorch.examples.models.gemma4.quant_utils import (
@@ -467,8 +471,13 @@ def _export_text_decoder(
     config = Gemma4Config.from_config(variant)
     config.use_kv_cache = True
     config.max_seq_len = max_seq_len
-    config.enable_dynamic_shape = True
+    config.enable_dynamic_shape = enable_dynamic_shape
     config.use_custom_sdpa = use_custom_sdpa
+    # Static-shape backends (OpenVINO) can't consume the data-dependent SymInt
+    # produced by input_pos[0].item() cache slicing. index_copy writes K/V at the
+    # position tensor directly, keeping the graph free of SymInt scalars.
+    if not enable_dynamic_shape:
+        config.use_index_copy_for_kv_cache = True
 
     if use_custom_sdpa:
         from executorch.extension.llm.custom_ops import custom_ops  # noqa: F401
@@ -476,7 +485,7 @@ def _export_text_decoder(
         logger.info("Custom SDPA enabled (tiled flash attention)")
 
     model_wrapper = Gemma4Model(
-        config=config, checkpoint_path=checkpoint_path, dtype=torch.float32
+        config=config, checkpoint_path=checkpoint_path, dtype=model_dtype
     )
     model = model_wrapper.get_eager_model()
     model.eval()
@@ -524,20 +533,29 @@ def _export_text_decoder(
         model.eval()
 
     # Export with audio embeds + dynamic shapes
-    example_inputs = model_wrapper.get_example_inputs_with_audio(seq_len=770)
+    example_inputs = model_wrapper.get_example_inputs_with_audio(seq_len=static_seq_len)
     dynamic_shapes = model_wrapper.get_dynamic_shapes(with_audio_embeds=True)
 
     with torch.nn.attention.sdpa_kernel([torch.nn.attention.SDPBackend.MATH]):
         with torch.no_grad():
-            ep = torch.export.export(
-                model,
-                (example_inputs[0],),
-                kwargs={
-                    "input_pos": example_inputs[1],
-                    "inputs_embeds": example_inputs[2],
-                },
-                dynamic_shapes=dynamic_shapes,
-            )
+            if ov_quantize != "none":
+                from executorch.examples.openvino.gemma4.ov_quant import (
+                    apply_ov_weight_compression,
+                )
+
+                ep = apply_ov_weight_compression(
+                    model, example_inputs, dynamic_shapes, ov_quantize, group_size
+                )
+            else:
+                ep = torch.export.export(
+                    model,
+                    (example_inputs[0],),
+                    kwargs={
+                        "input_pos": example_inputs[1],
+                        "inputs_embeds": example_inputs[2],
+                    },
+                    dynamic_shapes=dynamic_shapes,
+                )
 
     logger.info("Text decoder exported")
     del model, model_wrapper
@@ -559,6 +577,10 @@ def _export_components(
     include_audio: bool,
     include_vision: bool,
     use_custom_sdpa: bool,
+    enable_dynamic_shape: bool = True,
+    text_model_dtype: torch.dtype = torch.float32,
+    static_seq_len: int = 770,
+    ov_quantize: str = "none",
 ) -> dict:
     """Export each requested component to an ExportedProgram."""
     components = []
@@ -605,6 +627,10 @@ def _export_components(
         variant=variant,
         quantize_kv_cache=quantize_kv_cache,
         use_custom_sdpa=use_custom_sdpa,
+        enable_dynamic_shape=enable_dynamic_shape,
+        model_dtype=text_model_dtype,
+        static_seq_len=static_seq_len,
+        ov_quantize=ov_quantize,
     )
 
     return programs
@@ -616,8 +642,17 @@ def _build_partitioners(
     audio_quantize: str,
     vision_quantize: str,
     text_quantize: str,
+    backend: str = "xnnpack",
+    device: str = "CPU",
 ) -> dict:
-    """Build per-method XNNPACK partitioner lists."""
+    """Build per-method partitioner lists for the requested backend."""
+    if backend == "openvino":
+        from executorch.examples.openvino.gemma4.ov_quant import (
+            build_openvino_partitioners,
+        )
+
+        return build_openvino_partitioners(include_audio, include_vision, device)
+
     from executorch.backends.xnnpack.partition.xnnpack_partitioner import (
         XnnpackDynamicallyQuantizedPartitioner,
         XnnpackPartitioner,
@@ -666,6 +701,21 @@ def _build_transform_passes(include_audio: bool, include_vision: bool) -> dict:
                 self.ops_map[op], (args[0], scalar_as_tensor, *args[2:]), kwargs, meta
             )
 
+    class _ReplaceLogicalAndPass(ExportPass):
+        """Rewrite aten.logical_and -> aten.bitwise_and (identical for bool inputs).
+
+        OpenVINO's PyTorch frontend supports bitwise_and.Tensor but not
+        logical_and.default; this keeps the op inside the OV delegate instead of
+        fragmenting the graph around an unsupported node.
+        """
+
+        def call_operator(self, op, args, kwargs, meta):
+            if op != exir_ops.edge.aten.logical_and.default:
+                return super().call_operator(op, args, kwargs, meta)
+            return super().call_operator(
+                exir_ops.edge.aten.bitwise_and.Tensor, args, kwargs, meta
+            )
+
     bitwise_ops = {
         exir_ops.edge.aten.__rshift__.Scalar: exir_ops.edge.aten.bitwise_right_shift.Tensor,
         exir_ops.edge.aten.__lshift__.Scalar: exir_ops.edge.aten.bitwise_left_shift.Tensor,
@@ -680,7 +730,10 @@ def _build_transform_passes(include_audio: bool, include_vision: bool) -> dict:
         transform_passes["audio_encoder"] = []
     if include_vision:
         transform_passes["vision_encoder"] = []
-    transform_passes["text_decoder"] = [_ReplaceBitwiseScalarPass(bitwise_ops)]
+    transform_passes["text_decoder"] = [
+        _ReplaceBitwiseScalarPass(bitwise_ops),
+        _ReplaceLogicalAndPass(),
+    ]
     return transform_passes
 
 
@@ -699,6 +752,10 @@ def export_single_pte(
     include_audio: bool = True,
     include_vision: bool = True,
     use_custom_sdpa: bool = True,
+    backend: str = "xnnpack",
+    device: str = "CPU",
+    static_seq_len: int = 770,
+    ov_quantize: str = "none",
 ) -> Path:
     """Export components into a single PTE.
 
@@ -712,6 +769,14 @@ def export_single_pte(
     from executorch.exir.passes.sym_shape_eval_pass import (
         ConstraintBasedSymShapeEvalPass,
     )
+
+    # OpenVINO's torchdynamo compile path cannot consume SymInt graph inputs,
+    # so export the text decoder with static shapes (matching the llama OV example).
+    enable_dynamic_shape = backend != "openvino"
+
+    # The OV frontend materializes a second copy of all constants during convert,
+    # so fp32 (20.5 GB for E2B's 5.1B params) OOMs. Use the model's native bf16.
+    text_model_dtype = torch.bfloat16 if backend == "openvino" else torch.float32
 
     programs = _export_components(
         checkpoint_path=checkpoint_path,
@@ -727,6 +792,10 @@ def export_single_pte(
         include_audio=include_audio,
         include_vision=include_vision,
         use_custom_sdpa=use_custom_sdpa,
+        enable_dynamic_shape=enable_dynamic_shape,
+        text_model_dtype=text_model_dtype,
+        static_seq_len=static_seq_len,
+        ov_quantize=ov_quantize,
     )
 
     logger.info("Combining into single PTE...")
@@ -734,7 +803,13 @@ def export_single_pte(
         programs[name] = programs[name].run_decompositions({})
 
     partitioners = _build_partitioners(
-        include_audio, include_vision, audio_quantize, vision_quantize, text_quantize
+        include_audio,
+        include_vision,
+        audio_quantize,
+        vision_quantize,
+        text_quantize,
+        backend=backend,
+        device=device,
     )
     transform_passes = _build_transform_passes(include_audio, include_vision)
 
@@ -860,7 +935,44 @@ def main():
         help="Route attention through llama::custom_sdpa (tiled flash attention). "
         "Pass --no-use_custom_sdpa to fall back to matmul attention.",
     )
+    parser.add_argument(
+        "--backend",
+        type=str,
+        default="xnnpack",
+        choices=["xnnpack", "openvino"],
+        help="Delegate backend for lowering (default: xnnpack). "
+        "openvino requires --no-use_custom_sdpa (custom_sdpa is not an OpenVINO op).",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="CPU",
+        help="OpenVINO target device (CPU, GPU, NPU). Only used with --backend openvino.",
+    )
+    parser.add_argument(
+        "--static_seq_len",
+        type=int,
+        default=770,
+        help="Static sequence length the text decoder is compiled for (OpenVINO uses "
+        "static shapes). Use 1 for a single-token decode model suitable for "
+        "autoregressive generation.",
+    )
+    parser.add_argument(
+        "--ov_quantize",
+        type=str,
+        default="none",
+        choices=["none", "4wo", "8wo"],
+        help="OpenVINO data-free NNCF weight compression for the text decoder: "
+        "4wo (INT4 group-wise) or 8wo (INT8 per-channel). Only used with "
+        "--backend openvino; replaces the TorchAO --quantize path.",
+    )
     args = parser.parse_args()
+
+    if args.backend == "openvino" and args.use_custom_sdpa:
+        parser.error(
+            "--backend openvino requires --no-use_custom_sdpa "
+            "(torch.ops.llama.custom_sdpa is not lowerable to OpenVINO)."
+        )
 
     export_single_pte(
         checkpoint_path=args.checkpoint_path,
@@ -877,6 +989,10 @@ def main():
         include_audio=not args.no_audio,
         include_vision=not args.no_vision,
         use_custom_sdpa=args.use_custom_sdpa,
+        backend=args.backend,
+        device=args.device,
+        static_seq_len=args.static_seq_len,
+        ov_quantize=args.ov_quantize,
     )
 
 
