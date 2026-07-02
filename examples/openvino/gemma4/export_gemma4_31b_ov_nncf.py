@@ -21,8 +21,6 @@ import time
 import torch
 import torch.nn as nn
 
-# Run from this directory (examples/openvino/gemma4), per the OpenVINO examples
-# convention; run_gemma4_31b_gguf_cpu.py lives alongside this script.
 from run_gemma4_31b_gguf_cpu import load_gguf_cpu
 
 

@@ -37,6 +37,12 @@ class OpenvinoOperatorsSupport(OperatorSupportBase):
     extended_support_dict = {
         "torch.ops.dim_order_ops._clone_dim_order.default": None,
         "torch.ops.dim_order_ops._to_dim_order_copy.default": None,
+        # torch.export higher-order control-flow ops the OpenVINO PyTorch FX frontend
+        # translates (while_loop/cond -> Loop/If; scan -> Loop, then GatedDeltaNetFusion).
+        # These appear as HigherOrderOperator nodes whose __name__ is the bare op name.
+        "torch.ops.scan": None,
+        "torch.ops.while_loop": None,
+        "torch.ops.cond": None,
     }
 
     def __init__(

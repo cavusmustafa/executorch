@@ -84,6 +84,40 @@ python export_gemma4_31b_ov_nncf.py \
 
 `--max-layers N` exports a layer subset (useful for validation on limited RAM).
 
+### Direct compressed-INT4 OpenVINO graph (no bf16 dequant)
+
+`gemma4_31b_ov_builder.py` assembles the full 60-layer dense Gemma4-31B directly
+via the OpenVINO Python API from a GGUF checkpoint, keeping weights **INT4** the
+whole way — `Constant(i4) -> Convert -> Multiply(per-channel scale) -> MatMul`,
+which OpenVINO's decompression handling keeps compressed and decompresses inside
+the FullyConnected kernel (CPU and GPU). No bf16 materialization, no `torch`,
+`NNCF`, or `mslk`. Peak build memory stays near the compressed model size (~24 GB
+for the 30.8B dense model), so it fits where a bf16 export (~62 GB) OOMs.
+
+```python
+from gemma4_31b_ov_builder import Builder
+b = Builder(gguf_path="google_gemma-4-31B-it-Q4_K_M.gguf")
+model = b.build(T=8)              # full 60 layers; use n_layers=N to slice
+# serialize then compile (frees builder transients before compile):
+import openvino as ov
+ov.serialize(model, "g31.xml", "g31.bin")
+cm = ov.Core().compile_model(ov.Core().read_model("g31.xml"), "CPU")
+```
+
+Per-channel INT4 is used to avoid the reshape-driven constant-folding that would
+expand weights to f32 at compile time. For higher accuracy, use group-wise scale
+with the `keep_const_precision` / `disable_constant_folding` rt_info markers.
+
+## Qwen 3.5 MoE (GatedDeltaNet) — reference scripts
+
+`gdn_scan_module.py`, `gdn_full_layer.py`, `moe_scan_module.py`,
+`qwen35_full_model.py`, and `qwen35_gguf_loader.py` are the validated building
+blocks for running Qwen3.5-MoE's Mamba-style GatedDeltaNet on OpenVINO. The
+recurrence is written with PyTorch `scan`, which the companion OpenVINO branch
+(`translate_scan_fx` + `FuseScanGDN`) lowers to the native `GatedDeltaNet`
+op/kernel. Requires that custom OpenVINO build; `backends/openvino/partitioner.py`
+whitelists the `scan`/`while_loop`/`cond` HOPs so they partition to the backend.
+
 ## Notes
 
 - OpenVINO needs static shapes (no `SymInt` graph inputs). The E2B/E4B path sets
