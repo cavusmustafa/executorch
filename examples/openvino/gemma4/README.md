@@ -118,6 +118,74 @@ recurrence is written with PyTorch `scan`, which the companion OpenVINO branch
 op/kernel. Requires that custom OpenVINO build; `backends/openvino/partitioner.py`
 whitelists the `scan`/`while_loop`/`cond` HOPs so they partition to the backend.
 
+### Real-weight Qwen3.5-35B-A3B — reproduce ~37 tok/s on Intel GPU
+
+The scripts above use random weights (architecture/throughput validation). To run
+the **real** model end-to-end with the real GPTQ checkpoint and reproduce the
+tok/s of the official `OpenVINO/Qwen3.6-35B-A3B-int4-ov` IR (37–45 tok/s on a
+Panther Lake Arc GPU), use these four files:
+
+| File | Role |
+|---|---|
+| `qwen35_real_weights.py` | Loads the `Qwen3.5-35B-A3B-GPTQ-Int4` safetensors; dequantizes GPTQ experts; exposes per-name tensors. |
+| `qwen35_real_decode.py`  | Faithful single-token decode model (GDN + full-attn + MoE), numerically validated vs HF (GDN 2.2e-8, attn 1.2e-7). |
+| `qwen35_pool_moe.py`     | The **fused-FC MoE** + full-model `build()` (the optimization: 13.5 → 37.6 tok/s). |
+| `bench_qwen35_real_ov.py` | Raw-OV benchmark (reference number, native fused GDN kernel). |
+| `export_qwen35_real_pte.py` | Exports the ExecuTorch `.pte` with weight-only INT4 that stays compressed (32.2 tok/s at 40L). |
+
+**Prerequisites** (all three needed for the numbers; the `.pte` export needs the
+first two, the raw-OV native-GDN kernel needs the custom build):
+
+1. The **custom OpenVINO build** with `scan`/`FuseScanGDN` (the companion branch
+   above), on `PYTHONPATH`/`LD_LIBRARY_PATH`, and `OPENVINO_LIB_PATH` →
+   its `libopenvino_c.so` so the ET runtime dlopens it.
+2. The **GPTQ checkpoint** (~24.5 GB) and an Intel GPU. ~62 GB host RAM
+   (`torch.export` of the full 40-layer graph peaks ~58 GB).
+
+```bash
+# checkpoint
+huggingface-cli download Qwen/Qwen3.5-35B-A3B-GPTQ-Int4 --local-dir ./qwen35_gptq
+export QWEN35_GPTQ_DIR=$PWD/qwen35_gptq
+
+# point at the custom OpenVINO build (scan + FuseScanGDN)
+export PYTHONPATH=/path/to/openvino/build/python:$PYTHONPATH
+export LD_LIBRARY_PATH=/path/to/openvino/build:$LD_LIBRARY_PATH
+export OPENVINO_LIB_PATH=/path/to/openvino/build/libopenvino_c.so
+
+cd examples/openvino/gemma4
+
+# raw-OV reference (native fused GDN kernel) — expect ~37.6 tok/s at 40L INT4 on GPU
+python bench_qwen35_real_ov.py --layers 40 --device GPU --int4
+
+# ExecuTorch .pte (weight-only INT4, GDN unrolled) — expect ~32 tok/s at 40L on GPU
+GDN_UNROLL=1 python export_qwen35_real_pte.py --layers 40 --device GPU --run
+```
+
+Notes on the two numbers:
+
+- **`bench_qwen35_real_ov.py` (37.6 tok/s)** is the raw-OpenVINO path. Its speed
+  came from replacing the naive top-k MoE (`index_select` + per-expert `bmm`,
+  ~73 % of decode time) with the **fully-fused MoE** in `qwen35_pool_moe.py` —
+  all experts as three big `FullyConnected` ops, top-k masking on the
+  activations. `DYNAMIC_QUANTIZATION_GROUP_SIZE=0` keeps the tiny router/GDN
+  matmuls off the slow `ocl:ref` path. All GatedDeltaNet layers fuse to the
+  native kernel (`runtime GatedDeltaNet nodes: 30`).
+- **`export_qwen35_real_pte.py` (32.2 tok/s)** runs the same graph through the
+  ExecuTorch OpenVINO backend. ET's own `compress_pt2e` INT4 gives only 12.6
+  tok/s (its `quantized_decomposed` encoding compiles to a dense fp16 FC), so the
+  driver instead runs **raw NNCF `compress_weights(INT4_SYM)` inside the backend's
+  compile step** (monkeypatching `openvino_compile` — no ET/OV source edits). Two
+  subtleties, both handled in the script and explained in its docstring:
+  `apply_moc_transformations` folds the edge-decomposition's `permute_copy`
+  Transpose into `MatMul.transpose_b` (so weight-only INT4 sticks *and* the blob
+  re-imports in the ET runtime), and `GDN_UNROLL=1` unrolls the single decode step
+  (ET can't lower the `scan` HOP — this costs the ~5 tok/s vs raw-OV, since the
+  native fused GDN kernel doesn't fire in the `.pte`).
+
+Sparse MoE is pool-size-independent at decode (only top-8 of 256 experts execute),
+so `--experts N` materializes a smaller pool while every executed dimension stays
+real — the full 40 layers then fit in RAM. `--layers 4` is a fast smoke test.
+
 ## Notes
 
 - OpenVINO needs static shapes (no `SymInt` graph inputs). The E2B/E4B path sets
