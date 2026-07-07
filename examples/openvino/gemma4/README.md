@@ -108,6 +108,75 @@ Per-channel INT4 is used to avoid the reshape-driven constant-folding that would
 expand weights to f32 at compile time. For higher accuracy, use group-wise scale
 with the `keep_const_precision` / `disable_constant_folding` rt_info markers.
 
+### Full 60-layer `.pte` (blob injection — no bf16 export OOM)
+
+`export_gemma4_31b_ov_pte.py` produces the **full 60-layer** model as an ExecuTorch
+`.pte`, which the `compress_pt2e` path above cannot do (it materializes ~62 GB of
+bf16 weights and OOMs; only a layer subset fits). ExecuTorch's OpenVINO backend
+gets its delegate blob by calling `openvino_compile(gm, *args).export_model()`, so
+we monkeypatch `openvino_compile` to compile+embed the `Builder`'s full 60-layer
+INT4 `ov::Model` instead of the exported graph. A tiny stand-in torch model
+(matching the `tokens[1] → [1, vocab]` signature) is exported for `.pte` structure;
+the real weights come from the injected model. Runs end-to-end through the ET
+runtime at ~4.2 tok/s CPU (matches the raw-OV IR).
+
+```bash
+cd examples/openvino/gemma4
+# (a) build from GGUF directly — needs ~39 GB free RAM for the fp32-embedding build
+python export_gemma4_31b_ov_pte.py \
+    --gguf /path/to/gemma-4-31B-it-Q4_K_M.gguf --device GPU --layers 60 --run
+
+# (b) or inject an already-serialized IR (from the builder above) — skips the build,
+#     low RAM; recommended on memory-constrained boxes
+python export_gemma4_31b_ov_pte.py \
+    --ir g31.xml --device GPU --layers 60 --out gemma4_31b_ov_int4.pte --run
+```
+
+The `.pte` is large (~26 GB) because `lm_head` is tied to `token_embd` and the
+embedding is stored fp32; compressing the embedding to i4 would roughly halve it.
+
+### Build from a pre-quantized INT4 checkpoint (HQQ / torchao) — no GGUF requant
+
+`gemma4_31b_hqq_builder.py` (`HQQBuilder`) is an alternative weight source: instead of
+dequantizing GGUF Q4_K_M → fp32 and re-quantizing with a naive per-channel scale, it
+loads a pre-quantized **HQQ / torchao Int4** checkpoint (`gemma-4-31B-it-HQQ-INT4`) and
+maps its int4 weights **directly** to OpenVINO's compressed decompression pattern —
+`Constant(u4|i8) → Convert → Subtract(zp) → Multiply(scale) → MatMul`, folded by the
+plugin into one compressed `FullyConnected`, with **no fp32 weight ever materialized**.
+It subclasses `Builder`, reusing the identical graph (attention, dual RoPE, QK-norm,
+softcap…) and overriding only the weight-I/O layer.
+
+The checkpoint mixes two torchao quant types, both handled (metadata-driven):
+`Int4Tensor` (q/k/o/gate/up — u8 nibble-packed, scale/zp `[ng,out]`) and
+`IntxUnpackedToInt8Tensor` (v/down + embedding — int8 unpacked, scale/zp `[out,ng]`).
+Per-linear dequant matches the GGUF of the same model at cosine 0.995–0.9998.
+
+```bash
+cd examples/openvino/gemma4
+# full 60 layers on a 62 GB box: add --per-channel (see note below)
+python export_gemma4_31b_ov_pte.py \
+    --hqq /path/to/gemma-4-31B-it-HQQ-INT4/model.safetensors --per-channel \
+    --device GPU --layers 60 --out gemma4_31b_hqq_int4.pte --run
+```
+
+**`--per-channel` for full depth.** The checkpoint's native HQQ grouping is group-32
+(one scale/zero-point per 32 input elements). At full 60-layer depth that group-wise
+decompression subgraph (168 groups × 412 linears of reshape+Subtract+Multiply) inflates
+the OpenVINO **compile** working set past 62 GB and OOMs — a layer *subset* fits, the
+full model doesn't. `--per-channel` re-quantizes each linear to a single `[O,1]` i4 scale
+(reusing the GGUF builder's per-channel `_int4_lin`), collapsing that subgraph: the
+serialized IR drops from ~26 GB → 16.8 GB, compile stays ~13–44 GB, and the full 60-layer
+`.pte` (21.7 GB) builds and runs end-to-end at **4.22 tok/s CPU** (matching the GGUF path).
+It trades a little accuracy (one scale/row vs HQQ's calibrated group-32) for fitting the
+box. Without `--per-channel` you get the more accurate group-32 model, but full depth needs
+more host RAM (~96 GB); a subset (`--layers N`) still works for validation.
+
+This is the "use the int4 checkpoint directly" route (Path B). The wrong route (Path A)
+is `torch.export` of an HQQ/GPTQ torch model whose loader dequantizes on the host CPU —
+that both loses the int4 packing (back to the bf16 OOM) and doesn't reliably hit the
+fused compressed kernel. `poc_hqq_ov_pattern.py` proves the per-linear primitive
+(numeric 5e-7, weight stays u4, one fused `FullyConnected` on CPU+GPU).
+
 ## Qwen 3.5 MoE (GatedDeltaNet) — reference scripts
 
 `gdn_scan_module.py`, `gdn_full_layer.py`, `moe_scan_module.py`,
