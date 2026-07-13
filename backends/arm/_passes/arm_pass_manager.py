@@ -58,6 +58,7 @@ from executorch.backends.arm._passes import (
     DecomposeEmbeddingPass,
     DecomposeErfinvPass,
     DecomposeExpm1Pass,
+    DecomposeFlipPass,
     DecomposeFloorDividePass,
     DecomposeGeluPass,
     DecomposeGluPass,
@@ -112,6 +113,7 @@ from executorch.backends.arm._passes import (
     FuseConstantArgsPass,
     FuseDuplicateUsersPass,
     FuseEqualPlaceholdersPass,
+    FuseIdenticalInputTransformsPass,
     FuseQuantizedActivationPass,
     FuseViewCopyTransformPass,
     InsertConstShapesPass,
@@ -127,6 +129,7 @@ from executorch.backends.arm._passes import (
     NormalizeDelegateIOLayoutPass,
     NormalizeIndexPutBoolIndexTensorPass,
     NormalizeIndexPutNoneIndicesPass,
+    NormalizeTransformInputPlaceholdersPass,
     NormalizeWhileInitialArgsPass,
     PromoteBoolOperandsPass,
     QuantizeClampArgumentsPass,
@@ -500,6 +503,7 @@ class ArmPassManager(ExportedProgramPassManager):
                 # TODO: DecomposeLinearPass should run after InsertRescaleInt32Pass or
                 # before FoldAndAnnotateQParamsPass but is unable to at the moment.
                 # Ticket: MLETORCH-1539
+                FuseIdenticalInputTransformsPass(exported_program),
                 DecomposeLinearPass(),
                 InsertRescaleInt32Pass(),
                 FuseConsecutiveRescalesPass(),
@@ -536,6 +540,7 @@ class ArmPassManager(ExportedProgramPassManager):
                 PromoteBoolOperandsPass(),
                 DecomposeSinhPass(),
                 DecomposeSignPass(),
+                DecomposeFlipPass(),
                 DecomposeFloorDividePass(),
                 DecomposeGeluPass(),
                 DecomposeAddSubAlphaPass(),
@@ -543,6 +548,7 @@ class ArmPassManager(ExportedProgramPassManager):
                 DecomposeUnfoldToGatherPass(),
                 DecomposeEmbeddingPass(),
                 DecomposeIndexSelectToGatherPass(),
+                CastInt64BuffersToInt32Pass(exported_program),
                 DecomposeStridedSliceCopyPass(),
                 DecomposeSliceScatterPass(),
                 AccumulateIndexPutPass(),
@@ -625,7 +631,6 @@ class ArmPassManager(ExportedProgramPassManager):
                 DecomposePermuteForU55Pass(),
                 RewriteSlicePass(),
                 InsertConstShapesPass(),
-                ExirToTosaPass(exported_program),
             ]
         )
 
@@ -634,6 +639,8 @@ class ArmPassManager(ExportedProgramPassManager):
             [
                 CastInt64BuffersToInt32Pass(exported_program),
                 FuseEqualPlaceholdersPass(exported_program),
+                NormalizeTransformInputPlaceholdersPass(exported_program),
+                ExirToTosaPass(exported_program),
                 SymbolicToTosaShapesPass(),
                 InsertDynamicPaddingPass(),
                 FuseConsecutiveConcatShapesPass(),
